@@ -1,10 +1,12 @@
 import sys
 import time
+import os
 
 import serial.tools.list_ports
 import serial
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QGroupBox, QHBoxLayout, QPushButton, \
-    QVBoxLayout, QProgressBar, QMessageBox
+    QVBoxLayout, QProgressBar, QMessageBox, QLabel
 from PyQt5.QtCore import QThread, pyqtSignal
 
 
@@ -25,32 +27,49 @@ class ArduinoThread(QThread):
             time.sleep(3)
             self.running = True
 
+            # Set LED status to connected
+            self.update_led_icon("green")
+
             while self.running:
-                pass
+                if self.arduino.in_waiting > 0:
+                    data = self.arduino.readline().decode('utf-8').strip()
+                    self.message_received.emit(data)
         except serial.SerialException as e:
-            print(e)
+            print(f"Serial Exception: {e}")
 
     def send_data(self, data):
-        self.arduino.write(data.encode())
+        if self.arduino and self.arduino.is_open:
+            self.arduino.write(data.encode())
+            self.message_sent.emit(data)
 
     def stop(self):
         self.running = False
+        if self.arduino and self.arduino.is_open:
+            self.arduino.close()
+        self.quit()
+        self.wait()
+
+    def update_led_icon(self, param):
+        pass
+
 
 class SmartWasteDisposalWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
 
+        self.led_icon_label = None
         self.port = None
         self.central_widget = None
         self.smart_container_progress_bar = None
+        self.led_icon = None
 
         self.init_gui()
         self.arduino_thread = None
 
     def init_gui(self):
         self.setWindowTitle("Smart Waste Disposal")
-        self.setGeometry(300, 150, 600, 400)
+        self.setGeometry(300, 150, 300, 200)
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -64,9 +83,12 @@ class SmartWasteDisposalWindow(QMainWindow):
         # Creating buttons and progress bar
         buttons_groupbox = self.create_button_groupbox()
         smart_container_groupbox = self.create_progressbar_groupbox()
+        led_icon_groupbox = self.create_led_icon_groupbox()
 
+        # Add groupbox widgets to main layout
         main_layout.addWidget(buttons_groupbox, 0, 0, 1, 1)
         main_layout.addWidget(smart_container_groupbox, 1, 0, 1, 1)
+        main_layout.addWidget(led_icon_groupbox, 0, 1, 1, 1)
 
     def create_button_groupbox(self):
         buttons_groupbox = QGroupBox("Operator Buttons")
@@ -80,7 +102,6 @@ class SmartWasteDisposalWindow(QMainWindow):
         empty_container_button.clicked.connect(self.send_empty_command)
 
         restore_button = QPushButton("Restore", self)
-        # restore_button.clicked.connect()
 
         buttons_layout.addWidget(start_connection_button)
         buttons_layout.addWidget(empty_container_button)
@@ -96,27 +117,54 @@ class SmartWasteDisposalWindow(QMainWindow):
         self.smart_container_progress_bar.setOrientation(1)
         self.smart_container_progress_bar.setMinimum(0)
         self.smart_container_progress_bar.setMaximum(100)
-        self.smart_container_progress_bar.setValue(10) #just an example
+        self.smart_container_progress_bar.setValue(10)  # Just an example
 
         smart_container_layout.addWidget(self.smart_container_progress_bar)
 
         return smart_container_groupbox
 
-    def send_restore_command(self):
-        if self.serial_port:
-            try:
-                self.serial_port.write(b'123')
-                data = self.serial_port.readline()
-                print(f"{data}")
-
-            except serial.SerialException as e:
-                    print("Error:", e)
+    def update_progress_bar(self, value):
+        try:
+            value = int(value)
+            if value >= 98:
+                self.update_led_icon("red")
+                self.smart_container_progress_bar.setValue(100)
             else:
-                print("No connection with serial port.")
+                self.update_led_icon("green")
+                self.smart_container_progress_bar.setValue(value)
+
+        except ValueError:
+            print(f"Invalid data received: {value}")
+
+    def create_led_icon_groupbox(self):
+        led_icon_groupbox = QGroupBox("Status")
+        led_icon_layout = QHBoxLayout()
+        led_icon_groupbox.setLayout(led_icon_layout)
+
+        self.led_icon_label = QLabel()
+        self.led_icon = QPixmap('img/white_led.png')
+        self.led_icon_label.setPixmap(self.led_icon)
+
+        led_icon_layout.addWidget(self.led_icon_label)
+
+        return led_icon_groupbox
+
+    def update_led_icon(self, color):
+        if color == "green":
+            self.led_icon = QPixmap('img/green_led.png')
+        elif color == "red":
+            self.led_icon = QPixmap('img/red_led.png')
+        elif color == "white":
+            self.led_icon = QPixmap('img/white_led.png')
+        elif color == "yellow":
+            self.led_icon = QPixmap('img/yellow_led.png')
+
+        self.led_icon_label.setPixmap(self.led_icon)
+
 
     def closeEvent(self, event):
-        if self.serial_port and self.serial_port.is_open:
-            self.serial_port.close()
+        if self.arduino_thread is not None:
+            self.arduino_thread.stop()
         event.accept()
 
     def start_arduino_communication(self):
@@ -125,21 +173,32 @@ class SmartWasteDisposalWindow(QMainWindow):
             if "Arduino" in port.description:
                 self.port = port.device
                 break
-            else:
-                QMessageBox.warning(self, "Error", "Arduino not found")
-                return
+        else:
+            # Set LED status to error
+            self.update_led_icon("yellow")
+            QMessageBox.warning(self, "Error", "Arduino not found")
+            return
+
         try:
             self.arduino_thread = ArduinoThread(self.port)
+            self.arduino_thread.message_received.connect(self.update_progress_bar)
             self.arduino_thread.start()
+
+
         except serial.SerialException as e:
+            # Set LED status to error
+            self.update_led_icon("yellow")
             print(f"Error: {e}")
 
     def send_empty_command(self):
+        # "6" stands for emptying state on Arduino
+        self.arduino_thread.send_data("6")
+
+    def send_restore_command(self):
+        # "1" stands for empty state on Arduino
         self.arduino_thread.send_data("0")
 
-
 if __name__ == '__main__':
-
     app = QApplication(sys.argv)
     window = SmartWasteDisposalWindow()
     window.show()
