@@ -3,9 +3,10 @@ import time
 
 import serial.tools.list_ports
 import serial
+from PyQt5.QtGui import QIcon
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QGridLayout, QGroupBox, QHBoxLayout, QPushButton, \
-    QVBoxLayout, QProgressBar, QMessageBox, QLabel
+    QVBoxLayout, QProgressBar, QMessageBox, QLabel, QTextEdit
 from PyQt5.QtCore import QThread, pyqtSignal
 
 
@@ -23,7 +24,7 @@ class ArduinoThread(QThread):
     def run(self):
         try:
             self.arduino = serial.Serial(self.port, self.baudrate, timeout=1)
-            time.sleep(2)
+            time.sleep(2) # Small delay for the system
             self.running = True
 
             # Set LED status to connected
@@ -57,6 +58,8 @@ class SmartWasteDisposalWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.state_text_label = None
+        self.log_monitor = None
         self.led_icon_label = None
         self.port = None
         self.central_widget = None
@@ -68,11 +71,11 @@ class SmartWasteDisposalWindow(QMainWindow):
 
     def init_gui(self):
         self.setWindowTitle("Operator dashboard - Smart Waste Disposal")
-        self.setGeometry(300, 150, 625, 200)
+        self.setWindowIcon(QIcon("img/bin.png"))
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
-
+        self.log_monitor = QTextEdit()
         self.smart_container_progress_bar = QProgressBar()
 
         # Setting layout
@@ -82,14 +85,18 @@ class SmartWasteDisposalWindow(QMainWindow):
         # Creating groupbox of each element
         instruction_groupbox = self.create_instruction_groupbox
         buttons_groupbox = self.create_button_groupbox()
-        smart_container_groupbox = self.create_progressbar_groupbox()
         led_icon_groupbox = self.create_led_icon_groupbox()
+        smart_container_groupbox = self.create_progressbar_groupbox()
+        state_text_groupbox = self.create_state_text_groupbox()
+        text_edit_groupbox = self.create_text_edit_groupbox()
 
         # Add groupbox widgets to main layout
-        main_layout.addWidget(instruction_groupbox, 0, 0, 1, 2)
-        main_layout.addWidget(buttons_groupbox, 1, 0, 1, 1)
-        main_layout.addWidget(smart_container_groupbox, 2, 0, 1, 1)
-        main_layout.addWidget(led_icon_groupbox, 1, 1, 2, 1)
+        main_layout.addWidget(instruction_groupbox, 0, 0, 2, 2)
+        main_layout.addWidget(buttons_groupbox, 2, 0, 1, 1)
+        main_layout.addWidget(led_icon_groupbox, 2, 1, 1, 1)
+        main_layout.addWidget(smart_container_groupbox, 3, 0, 1, 1)
+        main_layout.addWidget(state_text_groupbox, 3, 1, 1, 1)
+        main_layout.addWidget(text_edit_groupbox, 0, 2, 3, 2)
 
     @property
     def create_instruction_groupbox(self):
@@ -170,15 +177,40 @@ class SmartWasteDisposalWindow(QMainWindow):
 
     def update_led_icon(self, color):
         if color == "green":
-            self.led_icon = QPixmap('img/green_led.png')
+            self.led_icon = QPixmap('green_led.png')
         elif color == "red":
-            self.led_icon = QPixmap('img/red_led.png')
+            self.led_icon = QPixmap('red_led.png')
         elif color == "white":
-            self.led_icon = QPixmap('img/white_led.png')
+            self.led_icon = QPixmap('white_led.png')
         elif color == "yellow":
-            self.led_icon = QPixmap('img/yellow_led.png')
+            self.led_icon = QPixmap('yellow_led.png')
 
         self.led_icon_label.setPixmap(self.led_icon)
+
+    def create_state_text_groupbox(self):
+        state_text_groupbox = QGroupBox("State")
+        state_text_layout = QHBoxLayout()
+        state_text_groupbox.setLayout(state_text_layout)
+
+        self.state_text_label = QLabel()
+        self.state_text_label.setText("Not available")
+        self.state_text_label.setWordWrap(True)
+        state_text_layout.addWidget(self.state_text_label)
+
+        return state_text_groupbox
+
+    def create_text_edit_groupbox(self):
+        text_edit_groupbox = QGroupBox("Events monitor")
+        text_edit_layout = QHBoxLayout()
+        text_edit_groupbox.setLayout(text_edit_layout)
+
+        text_edit_layout.addWidget(self.log_monitor)
+
+        return text_edit_groupbox
+
+    def update_text_edit(self, state):
+        if state == 101:
+            self.state_text_label.setText("ALARM")
 
     def closeEvent(self, event):
         if self.arduino_thread is not None:
@@ -208,29 +240,35 @@ class SmartWasteDisposalWindow(QMainWindow):
             print(f"Error: {e}")
 
     def read_data(self, message):
+        # timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.log_monitor.append(f": {message}")
+
         try:
             value = int(message)
             if 0 <= value <= 100:
-                self.update_led_icon(value)
+                # self.update_led_icon("green")
                 self.update_progress_bar(value)
-            if value == 101:
+                # self.log_viewer.append(f"Storage level: {message}")
+            elif value == 101:
+            #     # update state text
+                self.update_text_edit(value)
                 QMessageBox.warning(self, "Alarm", "Alarm: check the waste container!")
-
                 self.update_led_icon("yellow")
             else:
-                print(f"Invalid data received: {value}")
+                # self.log_viewer.append(f"Numeric value out of range: {value}")
+                print(f"Invalid data received: {message}")
 
-        except serial.SerialException as e:
-            print(f"Error: {e}")
+        except ValueError:
+            print(f"Error: {message}")
 
     def send_empty_command(self):
         # "6" stands for emptying state on Arduino
-        self.arduino_thread.send_data("6")
+        self.arduino_thread.send_data("0")
         self.update_led_icon("green")
 
     def send_restore_command(self):
         # "1" stands for empty state on Arduino
-        self.arduino_thread.send_data("0")
+        self.arduino_thread.send_data("6")
         self.update_led_icon("green")
         self.update_progress_bar(0)
 
