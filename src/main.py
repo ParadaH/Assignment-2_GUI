@@ -35,7 +35,7 @@ class ArduinoThread(QThread):
                     data = self.arduino.readline().decode('utf-8').strip()
                     self.message_received.emit(data)
         except serial.SerialException as e:
-            print(f"Serial Exception: {e}")
+            print(f"Error decoding data: {e}")
 
     def send_data(self, data):
         if self.arduino and self.arduino.is_open:
@@ -53,11 +53,26 @@ class ArduinoThread(QThread):
         pass
 
 
+def get_state_name(value):
+    container_state = {
+        101: "EMPTY",
+        102: "FULL",
+        103: "OPEN",
+        104: "CLOSE",
+        105: "ALARM",
+        106: "SLEEP",
+        107: "IDLE"
+    }
+    return container_state.get(value, "UNKNOWN")
+
+
 class SmartWasteDisposalWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
 
+        self.restore_button = None
+        self.empty_container_button = None
         self.state_text_label = None
         self.log_monitor = None
         self.led_icon_label = None
@@ -109,10 +124,11 @@ class SmartWasteDisposalWindow(QMainWindow):
             '1. Click "Start connection" to connect with Smart Waste Disposal.\n'
             '2. Press "Empty container" to empty container.\n'
             '3. Press "Restore" to disable alarm.\n'
-            '4. Monitor the fill level on the progress bar.\n'
-            '5. LED changes color according to status:\n'
+            '4. Press "Save" to save event log monitor to file.\n'
+            '5. Monitor the storage fill level on the progress bar.\n'
+            '6. LED changes color according to status:\n'
             '       - Green: Connection success.\n'
-            '       - Red: Connection error.\n'
+            '       - Red: Connection error or full storage.\n'
             '       - Yellow: Alarm!\n'
             '       - White: Initial state of the app.'
         )
@@ -129,15 +145,17 @@ class SmartWasteDisposalWindow(QMainWindow):
         start_connection_button = QPushButton("Start connection", self)
         start_connection_button.clicked.connect(self.start_arduino_communication)
 
-        empty_container_button = QPushButton("Empty container", self)
-        empty_container_button.clicked.connect(self.send_empty_command)
+        self.empty_container_button = QPushButton("Empty container", self)
+        self.empty_container_button.setEnabled(False)
+        self.empty_container_button.clicked.connect(self.send_empty_command)
 
-        restore_button = QPushButton("Restore", self)
-        restore_button.clicked.connect(self.send_restore_command)
+        self.restore_button = QPushButton("Restore", self)
+        self.restore_button.setEnabled(False)
+        self.restore_button.clicked.connect(self.send_restore_command)
 
         buttons_layout.addWidget(start_connection_button)
-        buttons_layout.addWidget(empty_container_button)
-        buttons_layout.addWidget(restore_button)
+        buttons_layout.addWidget(self.empty_container_button)
+        buttons_layout.addWidget(self.restore_button)
 
         return buttons_groupbox
 
@@ -177,13 +195,13 @@ class SmartWasteDisposalWindow(QMainWindow):
 
     def update_led_icon(self, color):
         if color == "green":
-            self.led_icon = QPixmap('green_led.png')
+            self.led_icon = QPixmap('img/green_led.png')
         elif color == "red":
-            self.led_icon = QPixmap('red_led.png')
+            self.led_icon = QPixmap('img/red_led.png')
         elif color == "white":
-            self.led_icon = QPixmap('white_led.png')
+            self.led_icon = QPixmap('img/white_led.png')
         elif color == "yellow":
-            self.led_icon = QPixmap('yellow_led.png')
+            self.led_icon = QPixmap('img/yellow_led.png')
 
         self.led_icon_label.setPixmap(self.led_icon)
 
@@ -200,7 +218,7 @@ class SmartWasteDisposalWindow(QMainWindow):
         return state_text_groupbox
 
     def create_text_edit_groupbox(self):
-        text_edit_groupbox = QGroupBox("Events monitor")
+        text_edit_groupbox = QGroupBox("Event log monitor")
         text_edit_layout = QHBoxLayout()
         text_edit_groupbox.setLayout(text_edit_layout)
 
@@ -209,8 +227,7 @@ class SmartWasteDisposalWindow(QMainWindow):
         return text_edit_groupbox
 
     def update_text_edit(self, state):
-        if state == 101:
-            self.state_text_label.setText("ALARM")
+        self.state_text_label.setText(state)
 
     def closeEvent(self, event):
         if self.arduino_thread is not None:
@@ -234,6 +251,9 @@ class SmartWasteDisposalWindow(QMainWindow):
             self.arduino_thread.message_received.connect(self.read_data)
             self.arduino_thread.start()
 
+            self.empty_container_button.setEnabled(True)
+            self.restore_button.setEnabled(True)
+
         except serial.SerialException as e:
             # Set LED status to error
             self.update_led_icon("yellow")
@@ -241,34 +261,37 @@ class SmartWasteDisposalWindow(QMainWindow):
 
     def read_data(self, message):
         # timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.log_monitor.append(f": {message}")
-
         try:
             value = int(message)
-            if 0 <= value <= 100:
-                # self.update_led_icon("green")
+            if 0 <= value <= 98:
+                self.update_led_icon("green")
                 self.update_progress_bar(value)
-                # self.log_viewer.append(f"Storage level: {message}")
-            elif value == 101:
-            #     # update state text
-                self.update_text_edit(value)
-                QMessageBox.warning(self, "Alarm", "Alarm: check the waste container!")
-                self.update_led_icon("yellow")
+                self.log_monitor.append(f"Storage level: {message}")
+            elif 98 <= value <= 100:
+                self.update_led_icon("red")
+                self.update_progress_bar(value)
+                self.log_monitor.append(f"Storage level: {message}")
+
+            elif 101 <= value <= 107:
+                state = get_state_name(value)
+                self.update_text_edit(state)
+                self.log_monitor.append(f"State: {state}")
+                if value == 105:
+                    self.update_led_icon("yellow")
+                    QMessageBox.warning(self, "Alarm", "Alarm: check the waste container!")
             else:
-                # self.log_viewer.append(f"Numeric value out of range: {value}")
-                print(f"Invalid data received: {message}")
+                # self.log_monitor.append(f"N: {value}")
+                print(f"Invalid data received: {value}")
 
         except ValueError:
             print(f"Error: {message}")
 
     def send_empty_command(self):
-        # "6" stands for emptying state on Arduino
-        self.arduino_thread.send_data("0")
+        self.arduino_thread.send_data("101")
         self.update_led_icon("green")
 
     def send_restore_command(self):
-        # "1" stands for empty state on Arduino
-        self.arduino_thread.send_data("6")
+        self.arduino_thread.send_data("107")
         self.update_led_icon("green")
         self.update_progress_bar(0)
 
