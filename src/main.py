@@ -263,11 +263,11 @@ class SmartWasteDisposalWindow(QMainWindow):
         # timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             value = int(message)
-            if 0 <= value <= 98:
+            if 0 <= value <= 97:
                 self.update_led_icon("green")
                 self.update_progress_bar(value)
                 self.log_monitor.append(f"Storage level: {message}")
-            elif 98 <= value <= 100:
+            elif 97 < value <= 100:
                 self.update_led_icon("red")
                 self.update_progress_bar(value)
                 self.log_monitor.append(f"Storage level: {message}")
@@ -280,7 +280,6 @@ class SmartWasteDisposalWindow(QMainWindow):
                     self.update_led_icon("yellow")
                     QMessageBox.warning(self, "Alarm", "Alarm: check the waste container!")
             else:
-                # self.log_monitor.append(f"N: {value}")
                 print(f"Invalid data received: {value}")
 
         except ValueError:
